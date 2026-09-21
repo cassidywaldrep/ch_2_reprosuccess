@@ -588,19 +588,26 @@ df_seasons <-  total_distance_measurements %>%
   mutate(
     season = case_when(
       
-      # 1) spring migration
-      UTC_date >= spring_start    & UTC_date <= spring_end   ~ "spring_migration",
+      # 1) Spring migration
+      UTC_date >= spring_start &
+        UTC_date <= spring_end ~ "spring_migration",
       
-      # 2) summer: after spring_end AND (before fall_start OR there was no fall_start)
-      UTC_date >  spring_end      & 
-        (UTC_date < fall_start | is.na(fall_start))          ~ "summer",
+      # 2) Fall migration
+      !is.na(fall_start) &
+        UTC_date >= fall_start &
+        UTC_date <= fall_end ~ "fall_migration",
       
-      # 3) fall migration (only if fall_start exists)
-      !is.na(fall_start)  &
-        UTC_date >= fall_start     & UTC_date <= fall_end     ~ "fall_migration",
+      # 3) Summer when fall migration exists
+      UTC_date > spring_end &
+        !is.na(fall_start) &
+        UTC_date < fall_start ~ "summer",
       
-      # 4) everything else → winter
-      TRUE                                                   ~ "winter"
+      # 4) Summer when there is NO fall migration
+      UTC_date > spring_end &
+        is.na(fall_start) ~ "summer",
+      
+      # 5) Everything else = winter
+      TRUE ~ "winter"
     )
   ) %>%
   dplyr::select(-spring_start, -spring_end,
@@ -994,308 +1001,232 @@ all_birds_season_distance_final %>%
   summarize(count = n())
 
 
-## checking updated results 
-
-update <- all_birds_season_distance_final %>%
-  mutate(birdid_year = paste(bandnum, sep = "_", year))
-# 
-# update %>%
-#   dplyr::select(bandnum, status) %>%
-#   distinct() %>%
-#   group_by(status) %>%
-# #   summarize(count = n())
-# 
-# forilsa <- update %>%
-#   dplyr::select(birdid_year, device_id, bandnum, UTC_date, julian_date, status, season, year, partial_status) %>%
-#   distinct()
-# 
-# length(unique(update$birdid_year))
-# 
-# write.csv(forilsa, "migration_forIlsa30June2026.csv")
-# 
-# ilsa <- read_csv("migration_forIlsa18Nov2025.csv") %>%
-#   mutate(birdid_year = paste(bandnum, sep = "", year))
-# 
-# 
-# length(unique(ilsa$birdid_year))
-# 
-# # checking for ilsa
-# data <- tbl(conn, "four_season_status_dailydisplacement_2022_2025_update30June26") %>%
-#   collect() %>%
-#   mutate(bird_year = paste(bandnum, year, sep = "_"))
-# 
-# data_test <- data %>%
-#   dplyr::select(bird_year, season, UTC_date, status) %>%
-#   distinct()
-# 
-# thirty <- data_test %>%
-#   group_by(bird_year, season, status) %>%
-#   summarize(count = n()) %>%
-#   filter(season == "summer",
-#          count < 31,
-#          status != "resident")
-# 
-# # saving data set for jack
-# 
-# mall_migration <- data %>%
-#   dplyr::select(year, status, bandnum) %>%
-#   distinct()
-# 
-# write.csv(mall_migration, "data/mall_migration_status_2022_2025.csv")
-
 #-------------------------------------------------------------------------#
-###### PLOTTING ##################
-# #-------------------------------------------------------------------------#
-# df <- tbl(conn, "four_season_status_dailydisplacement_2022_2025") %>%
-#   collect() 
-
-plot_bird_seasons <- function(df, band_id, year_val, interactive = TRUE) {
-  # 1) filter to one bird and one year, then make sf
-  df_sf <- df %>%
-    filter(bandnum == band_id, year == year_val) %>%
-    st_as_sf(coords = c("Longitude","Latitude"), crs = 4326)
-  
-  # 2) ensure season has the right order
-  df_sf$season <- factor(
-    df_sf$season,
-    levels = c("spring_migration","summer","fall_migration","winter")
-  )
-  
-  # 3) choose view vs plot
-  if (interactive) {
-    tmap_mode("view")
-  } else {
-    tmap_mode("plot")
-  }
-  
-  # 4) build the map
-  base_map <- tm_shape(df_sf) +
-    tm_dots(
-      col        = "season",
-      palette    = "Set2",
-      size       = 1,
-      title      = "Season",
-      # in interactive mode, show the UTC_datetime in the popup
-      popup.vars = c("Date/Time" = "UTC_datetime")
-    )
-  
-  # 5) if static, add text labels of the datetime
-  if (!interactive) {
-    base_map <- base_map +
-      tm_text(
-        text      = "UTC_datetime",
-        size      = 0.5,
-        just      = "left",
-        ymod      = 1
-      )
-  }
-  
-  # 6) finalize layout
-  base_map +
-    tm_layout(
-      title          = paste("Bird", band_id, "–", year_val),
-      legend.outside = TRUE
-    )
-}
-
-plot_bird_seasons(df, "213738409", 2022)
-
-test<- all_birds_season_distance_final %>% filter(bandnum == "222779073", 
-                                                  year == "2024", 
-                                                  season == "spring_migration")
-
-
-#-------------------------------------------------------------------------#
-###### DAILY DISPLACEMENT GRAPHS ##################
+###### creating other ecological periods ###########################
 #-------------------------------------------------------------------------#
 
+# read in dataset from the database
 
-#— 1) select a random 100 birds that are resident or migratory
-
-bird_year_sample <- all_birds_season_distance_final %>%
-  
-  filter(year == 2026) %>%
-  # 
-  # # Keep birds that are in your molt dataset
-  # filter(bandnum %in% (runs_df %>% pull(bandnum))) %>%
-  
-  # # Identify August fall migration points
-  # filter(season == "fall_migration",
-  #        month(UTC_date) == 8) %>%
-  
-  # Collapse to bird-year level
-  distinct(bandnum, year) %>%
-  
-  # Sample
-  slice_sample(n = 100)
-
-df <- all_birds_season_distance_final %>%
-  semi_join(bird_year_sample, by = c("bandnum", "year"))
-#— 1) Define a consistent color palette for seasons
-season_levels <- c("spring_migration","summer","fall_migration","winter")
-season_cols   <- setNames(brewer.pal(4, "Set2"), season_levels)
-
-#— 2) Map‐making function with ggplot
-make_map <- function(tmp) {
-  
-  states <-
-    rnaturalearth::ne_states(
-      country = c("canada", "united states of america", "greenland"),
-      returnclass = "sf"
-    )
-  
-  
-  min_long <- min(tmp$Longitude) - 0.4
-  max_long <- max(tmp$Longitude) + 0.4
-  min_lat <- min(tmp$Latitude) - 0.4
-  max_lat <- max(tmp$Latitude) + 0.4
-  
-  ggplot(data = states) + 
-    geom_sf(fill = "grey95", color = "grey50") +
-    geom_point(data = tmp, aes(x = Longitude, y = Latitude, color = season),
-               size = 1.3) +
-    scale_color_manual(values = season_cols) +
-    coord_sf(xlim = c(min_long,max_long),
-             ylim = c(min_lat, max_lat),
-             expand = F) +
-    labs(x = "Longitude", y = "Latitude") +
-    theme_minimal() +
-    theme(legend.position = "none")
-}
-
-#— 3) Displacement‐plot function (same as before)
-make_disp <- function(tmp) {
-  ggplot(tmp, aes(x = UTC_date, y = daily_displacement_km, color = season)) +
-    geom_line() +
-    scale_color_manual(values = season_cols) +
-    labs(x = "Date", y = "Daily displacement (km)") +
-    theme_minimal()
-}
-
-
-#— 4) Prepare the list of bird–year combos
-bird_years <- df %>%
-  distinct(bandnum, year) %>%
-  arrange(bandnum, year)
-
-#— 5) Open one PDF device
-pdf("2026_migration.pdf", width = 12, height = 6)
-
-for (i in seq_len(nrow(bird_years))) {
-  bn <- bird_years$bandnum[i]
-  yr <- bird_years$year[i]
-  
-  tmp <- df %>%
-    filter(bandnum == bn, year == yr) %>%
-    mutate(season = factor(season, levels = season_levels))
-  
-  bird_status <- unique(tmp$status)
-  
-  map_gg  <- make_map(tmp) +
-    ggtitle(paste("Bird", bn, "–", yr, "–", bird_status))
-  
-  disp_gg <- make_disp(tmp) +
-    ggtitle(paste("Daily displacement:", bn, yr, "-", bird_status))
-  
-  print(map_gg + disp_gg + 
-          plot_layout(ncol = 2, widths = c(3, 2)) &
-          theme(plot.title = element_text(hjust = 0.5)))
-}
-
-dev.off()
-
-
-### graph for manuscript ####
-
-seasons <- tbl(conn, "four_season_status_dailydisplacement_2022_2025") %>%
+all_birds_season_distance_final <- tbl(conn, "four_season_status_dailydisplacement_2022_sep2026") %>%
   collect() 
 
-my_colors <- c("winter" = "#decab5", "spring_migration" = "#08306b", 
-               "summer" = "#add8e6", "fall_migration" = "#a6615e")
+test <- all_birds_season_distance_final %>%
+  filter(bandnum == "228775622")
 
-common_theme <- theme_bw() + 
-  theme(panel.grid.minor = element_blank(),
-        legend.position = "right")
+##---------------------------------------------------------------------------##
+#  FILTERING (birds without sufficient data)  ----------------------
+##---------------------------------------------------------------------------##
 
-states <- ne_states(country = c("united states of america", "canada"), returnclass = "sf")
+# number of bird year instances
 
-data1 <- seasons %>%
-  filter(bandnum == "228701157", 
-         year == "2024")
+initial_bird_years <- all_birds_season_distance_final %>%
+  distinct(bandnum, year) %>%
+  count() %>%
+  pull(n)
 
-min_long <- min(data1$Longitude) - 3
-max_long <- max(data1$Longitude) + 2
-min_lat <- min(data1$Latitude) - 1
-max_lat <- max(data1$Latitude) + 1
+# STEP ONE: filtering out birds without 14 days of data (meaning they died early in the winter)
 
+step1 <- all_birds_season_distance_final %>%
+  group_by(bandnum, year) %>%
+  filter(n_distinct(UTC_date) >= 14)
 
-pa <- ggplot(data = states) + 
-  geom_sf(fill = "grey95", color = "grey50") +
-  geom_point(data = data1, aes(x = Longitude, y = Latitude, color = season),
-             size = 1.3) +
-  scale_color_manual(values = my_colors, 
-                     breaks = c("winter", "spring_migration", "summer", "fall_migration"),
-                     labels = function(x) str_to_sentence(str_replace_all(x, "_", " "))) +
-  coord_sf(xlim = c(min_long,max_long),
-           ylim = c(min_lat, max_lat),
-           expand = F) +
-  labs(x = "Longitude", y = "Latitude", title = "(a) Ind 1: Movement") +
-  common_theme 
+step1_unknown <- step1 %>% 
+  distinct(bandnum, year) %>% 
+  nrow()
 
-pb <- ggplot(data1, aes(x = UTC_date, y = daily_displacement_km, color = season)) +
-  geom_segment(aes(xend = UTC_date, yend = 0), size = 1) +
-  scale_color_manual(values = my_colors, guide = "none") +
-  scale_x_date(date_labels = "%b", date_breaks = "1 month") +
-  labs(y = "Daily displacement (km)", x = "", title = "(b) Ind 1: Displacement") +
-  common_theme 
+cat("After filtering birds with insufficient data:", step1_unknown, "lost:", initial_bird_years - step1_unknown, "\n")
 
 
-data2 <- seasons %>%
-  filter(bandnum == "222779292", 
-         year == "2023")
+# STEP TWO: Filter out birds that don't have enough data as well as "unknown birds"
 
-min_long <- min(data2$Longitude) - 8
-max_long <- max(data2$Longitude) + 8
-min_lat <- min(data2$Latitude) - 1
-max_lat <- max(data2$Latitude) + 1
+step2 <- step1 %>%
+  filter(status != "unknown")
 
+step2_bird_years <- step2 %>% 
+  distinct(bandnum, year) %>% 
+  nrow()
 
-pc <- ggplot(data = states) + 
-  geom_sf(fill = "grey95", color = "grey50") +
-  geom_point(data = data2, aes(x = Longitude, y = Latitude, color = season),
-             size = 1.3) +
-  scale_color_manual(values = my_colors, 
-                     breaks = c("winter", "spring_migration", "summer", "fall_migration"),
-                     labels = function(x) str_to_sentence(str_replace_all(x, "_", " "))) +
-  coord_sf(xlim = c(min_long,max_long),
-           ylim = c(min_lat, max_lat),
-           expand = F) +
-  labs(x = "Longitude", y = "Latitude", title = "(c) Ind 2: Movement") +
-  common_theme +
-  theme(legend.position = "none")
+# lost an additional...
 
-pd <- ggplot(data2, aes(x = UTC_date, y = daily_displacement_km, color = season)) +
-  geom_segment(aes(xend = UTC_date, yend = 0), size = 1) +
-  scale_color_manual(values = my_colors, guide = "none") +
-  scale_x_date(date_labels = "%b", date_breaks = "1 month") +
-  labs(y = "Daily displacement (km)", x = "", title = "(d) Ind 2: Displacement") +
-  common_theme 
+cat("After filtering unknown birds:", step2_bird_years, 
+    "lost:", step1_unknown - step2_bird_years, "\n")
 
 
-first <- (pa | pb) 
+# STEP THREE: for each band–season_year–season, drop only winter OR summer chunks < 14 days
+# bring in season_year logic (this means that winters in the fall are assigned the next year winter)
 
-second <- (pc | pd) 
+step3 <- step2 %>%
+  mutate(
+    season_year = case_when(
+      season == "winter" & month(UTC_date) > 7 ~ year(UTC_date) + 1,
+      TRUE                                       ~ year(UTC_date)
+    )
+  ) %>%
+  group_by(bandnum, season_year, season) %>%
+  filter(
+    # Keep groups where either:
+    # 1. season is NOT winter or summer
+    # OR
+    # 2. season is winter or summer AND date range is > 14 days
+    !(season %in% c("winter", "summer") & 
+        (n_distinct(UTC_date) < 14)
+    )) %>%
+  ungroup()
 
-# Combine the two rows
-combined <- first / second
 
-# Force the 50/50 split and collect the legend
-combined_plot <- combined + 
-  plot_layout(guides = 'collect', widths = c(1, 1)) & 
-  theme(legend.position = "bottom")
+step3_bird_years <- step3 %>% 
+  distinct(bandnum, year) %>% 
+  nrow()
 
-ggsave(combined_plot, 
-       height = 6, 
-       width = 8, 
-       dpi = 600, 
-       file = "figures_tables/suppmat_distancemap.png")
+
+cat("After filtering birds with insufficient winter_summer:", step3_bird_years, "lost:", step2_bird_years - step3_bird_years, "\n")
+
+# no birds lost although probably lost seasons
+
+# All season periods BEFORE filtering (from step2)
+all_seasons_before <- step2 %>%
+  mutate(
+    season_year = case_when(
+      season == "winter" & month(UTC_date) > 7 ~ year(UTC_date) + 1,
+      TRUE ~ year(UTC_date)
+    )
+  ) %>%
+  distinct(bandnum, season, season_year)
+
+# All season periods AFTER filtering (from step3)
+all_seasons_after <- step3 %>%
+  distinct(bandnum, season, season_year)
+
+# Find dropped seasonal periods
+removed_seasons <- anti_join(all_seasons_before, all_seasons_after,
+                             by = c("bandnum", "season", "season_year"))
+
+removed_seasons %>%
+  group_by(season) %>%
+  summarize(count = n())
+
+# Count how many were lost
+cat("Season periods lost after filtering:", nrow(removed_seasons), "\n")
+
+# Optional: view which periods were dropped
+removed_seasons
+
+#-------------------------------------------------------------------------#
+###### quick checks ###########################
+#-------------------------------------------------------------------------#
+
+# this will check that everyone has a season...if not, something may have gone wrong in the ruleset
+
+step3 %>%
+  filter(is.na(season))
+
+# this makes sure that the filtering step above worked
+# there should be no data < 14 days in summer or winter
+
+step3 %>%
+  group_by(bandnum, season_year, season) %>%
+  summarise(days = n(), .groups="drop") %>%
+  filter(days < 14, season %in% c("summer", "winter")
+  )
+
+#-------------------------------------------------------------------------#
+###### preseason delineation ###########################
+#-------------------------------------------------------------------------#
+
+# this ruleset makes premigration, late spring migration, arrival onto breeding grounds, and pre fall migration
+
+# picking one day per bird year
+
+daily_data <- step3 %>%
+  dplyr::select(bandnum, UTC_date, season, season_year) %>%
+  mutate(UTC_date = as.Date(UTC_date)) %>%
+  distinct()
+
+# calculating specific start and end dates to help assign ecological seasons
+
+boundaries <- daily_data %>%
+  group_by(bandnum, season_year) %>%
+  summarize(
+    has_spring = any(season == "spring_migration"),
+    winter_end = if (any(season == "winter")) max(UTC_date[season == "winter"]) else as.Date(NA),
+    premig_start = winter_end - days(13),
+    
+    has_summer = any(season == "summer"),
+    summer_start = if (has_summer) min(UTC_date[season == "summer"]) else as.Date(NA),
+    earlybreed_end = if (has_summer) summer_start + days(13) else as.Date(NA),
+    
+    has_fall = any(season == "fall_migration"),
+    fall_start = if (has_fall) min(UTC_date[season == "fall_migration"]) else as.Date(NA),
+    prefall_start = fall_start - days(14),
+    .groups = "drop")
+
+# join start and end dates back to daily data set and calculate spring migration days
+
+preseason_delinations <- daily_data %>%
+  left_join(boundaries, by = c("bandnum","season_year")) %>%
+  arrange(bandnum, season_year, UTC_date) %>%
+  group_by(bandnum, season_year) %>%
+  add_count(season == "spring_migration", name = "n_spring") %>%
+  
+  # calculates the proportion day in spring migration
+  mutate(
+    spring_day_index = if_else(season == "spring_migration",
+                               cumsum(season == "spring_migration"),
+                               NA_integer_),
+    spring_prop      = spring_day_index / n_spring
+  ) %>%
+  ungroup() %>%
+  
+  # 4) assign sub-season based on day
+  mutate(
+    season2 = case_when(
+      # last 14 days of winter before spring
+      has_spring &
+        season == "winter" &
+        UTC_date >= premig_start & UTC_date <= winter_end
+      ~ "late_winter",
+      
+      # first 14 days of summer
+      has_summer &
+        season == "summer" &
+        UTC_date >= summer_start & UTC_date <= earlybreed_end
+      ~ "early_breeding",
+      
+      # last 14 days before fall migration
+      has_fall &
+        season == "summer" &
+        UTC_date >= prefall_start & UTC_date <= fall_start 
+      ~ "prefall_migration",
+      
+      # last 25% of spring days
+      season == "spring_migration" &
+        spring_prop > 0.75
+      ~ "late_spring_migration",
+      
+      # everything else stays the same
+      TRUE ~ as.character(season)
+    )
+  ) %>%
+  
+  # 5) drop the helpers
+  dplyr::select(bandnum, season2, UTC_date) 
+
+all_ecological_periods <- 
+  left_join(step3, preseason_delinations, by = c("bandnum", "UTC_date"))
+
+##### check!!
+
+# the length of early_breeding, prespring migration and prefall migration should be less than 14.
+# if it's not exactly 14, it's because so ducks missed a check in or two. That's fine as it's the previous 14 days, not the previous 14 checkins.
+
+all_ecological_periods %>%
+  dplyr::select(bandnum, season2, UTC_date, season_year) %>%
+  distinct() %>%
+  group_by(bandnum, season2, season_year) %>%
+  summarize(length = n()) %>%
+  group_by(season2) %>%
+  summarize(avg_length = mean(length, na.rm = TRUE))
+
+
+dbWriteTable(conn, "eight_season_status_dailydisplacement_2022_2026_updatedsep2026", all_ecological_periods, overwrite = TRUE, append = FALSE, row.names = FALSE)
+

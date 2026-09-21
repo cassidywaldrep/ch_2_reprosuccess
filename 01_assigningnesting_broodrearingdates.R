@@ -18,7 +18,7 @@ conn <- dbConnect(
 
 # reduced 1 attempt per individual 
 
-nesting_birds <- tbl(conn, "nest_and_brood_dates_6Jul26") %>%
+nesting_birds <- tbl(conn, "nest_and_brood_dates_15sep2026") %>%
   collect() %>%
   distinct()
 
@@ -26,13 +26,10 @@ nesting_birds
 
 # bringing in reproductive status and additional dates as needed
 
-nesting_birds_all_attempts <- tbl(conn, "nest_dates_and_locations_for_all_attempts_6Jul26") %>%
+nesting_birds_all_attempts <- tbl(conn, "nest_dates_and_locations_for_all_attempts_updatedsep2026") %>%
   collect() %>%
   dplyr::select(birdid_year, nest_start, nest_end, lay_start, lay_end, inc_start, inc_end, status_comb, attempt_status, date_assignment_method, nest_location_method) 
 
-
-test <- nesting_birds_all_attempts %>%
-  mutate(days_inc = nest_end - nest_start)
 
 nesting_birds_dates <- nesting_birds %>%
   left_join(nesting_birds_all_attempts, by = c("birdid_year", "nest_start", "nest_end"))
@@ -90,7 +87,9 @@ nesting_birds_dates %>%
   count(start_date_rule)
 
 
-write.csv(incubation_dataset, "results/incubation_dataset_successful_failed_dates_17Aug26_FINAL.csv")
+write.csv(incubation_dataset, "results/incubation_dataset_successful_failed_dates_ch2_updatedsep2026.csv")
+
+
 
 #------------------------------------------------------------------------------#
 ##### creating nesting (egglaying AND incubation) dataset
@@ -192,7 +191,7 @@ brooding_birds <- nesting_birds %>%
   filter(is.na(brood_start) == FALSE) %>%
   dplyr::select(band_year, birdid_year, brood_start, brood_end)
 
-brood_status <- tbl(conn, "mall_broodrearing_classified_IncompleteDataBirdIncluded_6Jul26") %>%
+brood_status <- tbl(conn, "mall_broodrearing_classified_IncompleteDataBirdIncluded_15sep20") %>%
   collect() %>%
   dplyr::select(birdid_year, status_early_late) %>%
   mutate(brood_reaing_status = ifelse(status_early_late == "successful_brood_early_successful_brood_late", "success", "failed"))
@@ -200,18 +199,18 @@ brood_status <- tbl(conn, "mall_broodrearing_classified_IncompleteDataBirdInclud
 brood_status <- brooding_birds %>%
   left_join(brood_status, by = "birdid_year") 
 
-write.csv(brood_status, "results/all_broodrearing_successful_failed_15Jul26.csv")
-
-#------------------------------------------------------------------------------#
-##### all incubation attempts for Daria 7/22/2026
-#------------------------------------------------------------------------------#
-
-inc_daria <- tbl(conn, "nest_dates_and_locations_for_all_attempts_6Jul26") %>%
-  collect() %>% 
-  filter(status_incubation != "defer", 
-         date_assignment_method != "window", 
-         is.na(inc_start) == FALSE) %>%
-  dplyr::select(birdid_year, inc_start, inc_end, nest_lat, nest_long, attempt_status, attempt_new, status_incubation)
-
-write.csv(inc_daria, "results/incubation_dates_Daria_22Jul26.csv")
+write.csv(brood_status, "results/all_broodrearing_successful_failed_ch2_updatedsep2026.csv")
+# 
+# #------------------------------------------------------------------------------#
+# ##### all incubation attempts for Daria 7/22/2026
+# #------------------------------------------------------------------------------#
+# 
+# inc_daria <- tbl(conn, "nest_dates_and_locations_for_all_attempts_6Jul26") %>%
+#   collect() %>% 
+#   filter(status_incubation != "defer", 
+#          date_assignment_method != "window", 
+#          is.na(inc_start) == FALSE) %>%
+#   dplyr::select(birdid_year, inc_start, inc_end, nest_lat, nest_long, attempt_status, attempt_new, status_incubation)
+# 
+# write.csv(inc_daria, "results/incubation_dates_Daria_22Jul26.csv")
 
