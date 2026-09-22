@@ -38,9 +38,12 @@ ecological_periods <- tbl(conn, "ecologicalperiods") %>%
     day_of_year = yday(UTC_date), 
     hour_of_year = ((day_of_year)-1)*24+hour(UTC_datetime)) 
 
+
 #### download weather data from ERA5 ####
 
 # Izzy and Ilsa have code to do this on the computer (like using an API code), but I decided to just download from the website
+# https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels?tab=overview 
+# make sure to download the cdf version
 
 
 #-------------------------------------------------------------------------#
@@ -96,62 +99,81 @@ print(end - start)
 
 alltemp_binded <- bind_rows(alltemp[!sapply(alltemp, is.null)]) 
 
- dbWriteTable(conn, "hourly_temp_gps", alltemp_binded, append = FALSE, row.names = FALSE)
-
-
+# dbWriteTable(conn, "hourly_temp_gps", alltemp_binded, append = FALSE, row.names = FALSE, overwrite = TRUE)
 
 #-------------------------------------------------------------------------#
 ###### Precipitation function  ###################
 #-------------------------------------------------------------------------#
+ 
+ ecological_periods_day <- ecological_periods %>%
+   dplyr::select(bandnum, UTC_date, Latitude, Longitude, year, day_of_year) %>%
+   group_by(bandnum, UTC_date) %>%
+   slice_head(n = 1)
+   
+   
+ # first, download from noaa: https://psl.noaa.gov/data/gridded/data.cpc.globalprecip.html
+ extract.precip.by.year <- function(mig.dat, y) {
+   
+   mig.dat.year <- mig.dat %>%
+     dplyr::filter(year == y)
+   
+   if (nrow(mig.dat.year) != 0) {
+     
+     # 1. Open the NetCDF file directly as a SpatRaster stack
+     nc_path <- paste0("data/precip.", y, ".nc")
+     r_stack <- terra::rast(nc_path)
+     
+     # 2. Set CRS and rotate from 0-360 to -180-180 longitude
+     terra::crs(r_stack) <- "EPSG:4326"
+     r_stack <- terra::rotate(r_stack)
+     
+     # 3. Loop through each unique day of the year present in your data
+     unique.days <- unique(mig.dat.year$day_of_year)
+     
+     mig.dat.all.days <- lapply(unique.days, function(d) {
+       
+       mig.dat.day <- mig.dat.year %>%
+         dplyr::filter(day_of_year == d)
+       
+       # Convert day points to terra SpatVector (faster and native to terra)
+       mig.dat.day.vect <- terra::vect(
+         mig.dat.day, 
+         geom = c("Longitude", "Latitude"), 
+         crs = "EPSG:4326"
+       )
+       
+       # Extract precipitation from the raster layer matching day of year `d`
+       # (Assumes layers in the NetCDF correspond 1:1 with day_of_year)
+       precip_values <- terra::extract(r_stack[[d]], mig.dat.day.vect)[, 2]
+       
+       mig.dat.day <- mig.dat.day %>%
+         ungroup() %>%
+         mutate(precip = precip_values)
+       
+       return(mig.dat.day)
+     })
+     
+     mig.dat.all.days <- bind_rows(mig.dat.all.days)
+     print(paste(Sys.time(), "Completed year =", y))
+     
+     return(mig.dat.all.days)
+   }
+ }
+ 
+ # Run across your years
+ allprecip <- lapply(2022:2026, extract.precip.by.year, mig.dat = ecological_periods_day)
+ allprecip_binded <- bind_rows(allprecip[!sapply(allprecip, is.null)])
+ 
+ summary(allprecip_binded)
+ 
+ # about 6 Nas but probably due to the points being over an ocean, just taking from the day before. 
+ 
+ allprecip_binded_final <- allprecip_binded %>%
+   group_by(bandnum) %>%
+   arrange(bandnum, UTC_date) %>%
+   fill(precip, .direction = c("down"))
 
-extract.precip.by.day <- function(dat, d, nc){
-  mig.dat.day <- dat %>% dplyr::filter(day_of_year == d)
-  lon <- ncvar_get(nc, "lon") # longitude: deg 0 - 360
-  lat <- ncvar_get(nc, "lat", verbose = F) # latitude: deg -90 0 90
-  precip.array <- ncvar_get(nc, "precip") # extract precip data
-  r <- rotate(raster(t(precip.array[,,d]), xmn=min(lon), xmx=max(lon), ymn=min(lat), ymx=max(lat), 
-                     crs=CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs+ towgs84=0,0,0"))) # convert to raster
-  
-  
-  mig.dat.day.sp <- st_as_sf(mig.dat.day, coords = c("Longitude", "Latitude"), crs=4326)
-  mig.dat.day <- mig.dat.day %>% ungroup() %>% mutate(precip = terra::extract(r, mig.dat.day.sp))
-  
-  
-  print(paste(Sys.time(), "day of year =", d))
-  
-  return(mig.dat.day)
-}
+# dbWriteTable(conn, "daily_precip_gps", allprecip_binded_final, append = FALSE, row.names = FALSE, overwrite = TRUE)
 
-
-# function to extract precipitation for all days in a given year
-# mig.dat = GPS data for all years, y = year
-extract.precip.by.year <- function(mig.dat, y){
-  mig.dat.year <- mig.dat %>% dplyr::filter(year == y)
-  if(nrow(mig.dat.year)!=0){
-    precip.nc <- nc_open(paste0("data/precip/precip.",y,".nc")) # MAKE SURE TO CHANGE FOR YOUR DATA
-    unique.days <- unique(mig.dat.year$day_of_year)
-    mig.dat.all.days <- lapply(unique.days, extract.precip.by.day, dat = mig.dat.year, nc = precip.nc)
-    mig.dat.all.days <- bind_rows(mig.dat.all.days)
-    nc_close(precip.nc)
-    return(mig.dat.all.days)
-  }
-}
-
-allprecip <- lapply(2022:2025, extract.precip.by.year, mig.dat = nesting_data) # hourly GPS locations
-
-allprecip_binded <- bind_rows(allprecip[!sapply(allprecip, is.null)]) 
-
-
-# brooding_data_summarized_precip <- allprecip_binded %>%
-#   group_by(birdid_year) %>%
-#   summarize(mean_precip = mean(precip)) 
-# 
-# write.csv(brooding_data_summarized_precip, "data/gps_with_weather/brooding_data_summarized_precip_6Feb2026.csv")
-
-nesting_data_summarized_precip <- allprecip_binded %>%
-  group_by(birdid_year_attempt) %>%
-  summarize(mean_precip = mean(precip)) 
-
-write.csv(nesting_data_summarized_precip, "data/gps_with_weather/nesting_data_summarized_precip_6Feb2026.csv")
 
 

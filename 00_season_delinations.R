@@ -1010,9 +1010,6 @@ all_birds_season_distance_final %>%
 all_birds_season_distance_final <- tbl(conn, "four_season_status_dailydisplacement_2022_sep2026") %>%
   collect() 
 
-test <- all_birds_season_distance_final %>%
-  filter(bandnum == "228775622")
-
 ##---------------------------------------------------------------------------##
 #  FILTERING (birds without sufficient data)  ----------------------
 ##---------------------------------------------------------------------------##
@@ -1036,26 +1033,27 @@ step1_unknown <- step1 %>%
 
 cat("After filtering birds with insufficient data:", step1_unknown, "lost:", initial_bird_years - step1_unknown, "\n")
 
+# for this analysis, I am keeping in the known birds 
 
 # STEP TWO: Filter out birds that don't have enough data as well as "unknown birds"
 
-step2 <- step1 %>%
-  filter(status != "unknown")
-
-step2_bird_years <- step2 %>% 
-  distinct(bandnum, year) %>% 
-  nrow()
-
-# lost an additional...
-
-cat("After filtering unknown birds:", step2_bird_years, 
-    "lost:", step1_unknown - step2_bird_years, "\n")
+# step2 <- step1 %>%
+#   filter(status != "unknown")
+# 
+# step2_bird_years <- step2 %>% 
+#   distinct(bandnum, year) %>% 
+#   nrow()
+# 
+# # lost an additional...
+# 
+# cat("After filtering unknown birds:", step2_bird_years, 
+#     "lost:", step1_unknown - step2_bird_years, "\n")
 
 
 # STEP THREE: for each band–season_year–season, drop only winter OR summer chunks < 14 days
 # bring in season_year logic (this means that winters in the fall are assigned the next year winter)
 
-step3 <- step2 %>%
+step3 <- step1 %>%
   mutate(
     season_year = case_when(
       season == "winter" & month(UTC_date) > 7 ~ year(UTC_date) + 1,
@@ -1084,7 +1082,7 @@ cat("After filtering birds with insufficient winter_summer:", step3_bird_years, 
 # no birds lost although probably lost seasons
 
 # All season periods BEFORE filtering (from step2)
-all_seasons_before <- step2 %>%
+all_seasons_before <- step1 %>%
   mutate(
     season_year = case_when(
       season == "winter" & month(UTC_date) > 7 ~ year(UTC_date) + 1,
