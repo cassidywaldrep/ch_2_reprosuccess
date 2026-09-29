@@ -34,6 +34,12 @@ nesting_birds_all_attempts <- tbl(conn, "nest_dates_and_locations_for_all_attemp
 nesting_birds_dates <- nesting_birds %>%
   left_join(nesting_birds_all_attempts, by = c("birdid_year", "nest_start", "nest_end"))
 
+# #------------------------------------------------------------------------------#
+# ###------ creating early term incubation dataset
+# # #------------------------------------------------------------------------------#
+
+
+
 
 # #------------------------------------------------------------------------------#
 # ###------ creating incubation dataset

@@ -104,76 +104,56 @@ alltemp_binded <- bind_rows(alltemp[!sapply(alltemp, is.null)])
 #-------------------------------------------------------------------------#
 ###### Precipitation function  ###################
 #-------------------------------------------------------------------------#
- 
- ecological_periods_day <- ecological_periods %>%
-   dplyr::select(bandnum, UTC_date, Latitude, Longitude, year, day_of_year) %>%
-   group_by(bandnum, UTC_date) %>%
-   slice_head(n = 1)
-   
-   
- # first, download from noaa: https://psl.noaa.gov/data/gridded/data.cpc.globalprecip.html
- extract.precip.by.year <- function(mig.dat, y) {
-   
-   mig.dat.year <- mig.dat %>%
-     dplyr::filter(year == y)
-   
-   if (nrow(mig.dat.year) != 0) {
-     
-     # 1. Open the NetCDF file directly as a SpatRaster stack
-     nc_path <- paste0("data/precip.", y, ".nc")
-     r_stack <- terra::rast(nc_path)
-     
-     # 2. Set CRS and rotate from 0-360 to -180-180 longitude
-     terra::crs(r_stack) <- "EPSG:4326"
-     r_stack <- terra::rotate(r_stack)
-     
-     # 3. Loop through each unique day of the year present in your data
-     unique.days <- unique(mig.dat.year$day_of_year)
-     
-     mig.dat.all.days <- lapply(unique.days, function(d) {
-       
-       mig.dat.day <- mig.dat.year %>%
-         dplyr::filter(day_of_year == d)
-       
-       # Convert day points to terra SpatVector (faster and native to terra)
-       mig.dat.day.vect <- terra::vect(
-         mig.dat.day, 
-         geom = c("Longitude", "Latitude"), 
-         crs = "EPSG:4326"
-       )
-       
-       # Extract precipitation from the raster layer matching day of year `d`
-       # (Assumes layers in the NetCDF correspond 1:1 with day_of_year)
-       precip_values <- terra::extract(r_stack[[d]], mig.dat.day.vect)[, 2]
-       
-       mig.dat.day <- mig.dat.day %>%
-         ungroup() %>%
-         mutate(precip = precip_values)
-       
-       return(mig.dat.day)
-     })
-     
-     mig.dat.all.days <- bind_rows(mig.dat.all.days)
-     print(paste(Sys.time(), "Completed year =", y))
-     
-     return(mig.dat.all.days)
-   }
- }
+
+extract.precip.by.hour <- function(dat, h, p.array, lon, lat, y2) {
+  mig.dat.hour <- dat %>% filter(hour_of_year == h)
+  
+  if (nrow(mig.dat.hour) != 0) {
+    # Need to add plus 1 because ERA5 defines hour as 1 starting at 00:00, not hour 0
+    r <- raster(t(p.array[,,h+1]), xmn = min(lon), xmx = max(lon), ymn = min(lat), ymx = max(lat), 
+                crs = CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"))
+    
+    mig.dat.hour.sp <- st_as_sf(mig.dat.hour, coords = c("Longitude", "Latitude"), crs = 4326)
+    mig.dat.hour <- mig.dat.hour %>% mutate(precip = extract(r, mig.dat.hour.sp))
+  }
+  
+  print(paste(Sys.time(), "year =", y2, "hour of year =", h))
+  return(mig.dat.hour)
+}
+
+extract.precip.by.year <- function(mig.dat, y){
+  mig.dat.year <- mig.dat %>% dplyr::filter(year == !!y)
+  
+  if(nrow(mig.dat.year) != 0){
+    p.nc <- nc_open(paste0("data/precip.", y, ".nc")) 
+    
+    # LOAD ONCE PER YEAR (This eliminates the major slowdown)
+    lon <- ncvar_get(p.nc, "longitude") 
+    lat <- ncvar_get(p.nc, "latitude", verbose = FALSE) 
+    p.array <- ncvar_get(p.nc, "tp") 
+    nc_close(p.nc) # Safe to close early since data is now in memory
+    
+    # Loop over unique hours instead of days
+    unique.hours <- sort(unique(mig.dat.year$hour_of_year))
+    mig.dat.all.hours <- lapply(unique.hours, extract.precip.by.hour, 
+                                dat = mig.dat.year, p.array = p.array, 
+                                lon = lon, lat = lat, y2 = y)
+    
+    mig.dat.all.hours <- bind_rows(mig.dat.all.hours)
+    return(mig.dat.all.hours)
+  }
+}
  
  # Run across your years
- allprecip <- lapply(2022:2026, extract.precip.by.year, mig.dat = ecological_periods_day)
+ allprecip <- lapply(2022:2026, extract.precip.by.year, mig.dat = ecological_periods)
  allprecip_binded <- bind_rows(allprecip[!sapply(allprecip, is.null)])
  
  summary(allprecip_binded)
+
+dbWriteTable(conn, "hourly_precip_gps", allprecip_binded, append = FALSE, row.names = FALSE, overwrite = TRUE)
+
+
  
- # about 6 Nas but probably due to the points being over an ocean, just taking from the day before. 
+
  
- allprecip_binded_final <- allprecip_binded %>%
-   group_by(bandnum) %>%
-   arrange(bandnum, UTC_date) %>%
-   fill(precip, .direction = c("down"))
-
-# dbWriteTable(conn, "daily_precip_gps", allprecip_binded_final, append = FALSE, row.names = FALSE, overwrite = TRUE)
-
-
 
