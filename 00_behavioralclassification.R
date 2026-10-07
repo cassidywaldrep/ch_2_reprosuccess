@@ -211,6 +211,9 @@ summarized_output <- tbl(conn, "behaviormodel_2022_sep2026") %>%
             num_preen_fixes = sum(case_when(behaviour == "preen" ~ 1, TRUE ~ 0), na.rm = TRUE)) %>%
   collect()
 
+View(summarized_output %>%
+       filter(bandnum == "	
+225791631"))
 
 # Function from Resheff et al. 2022 to compute the confusion matrix correction for time budgets
 
