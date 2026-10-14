@@ -8,6 +8,9 @@
 
 library(tidyverse)
 library(nimble)
+library(nimbleHMC)
+library(coda)
+library(MCMCvis)
 
 #-------------------------------------------------------------------------#
 ###### creating different season combinations for model #############
@@ -278,11 +281,21 @@ unique_birds_feed <- dat_feed[!duplicated(dat_feed$bird_year),]
 ## indexing --------------------------------------------------------------------
 
 # b loop 
-
+nind <- length(unique(c(input_data_scale$id)))
 nobs2 <- nrow(dat_odba)
 ids2 <- dat_odba$id
 years2 <- dat_odba$year_numeric
 sub_seasons2 = dat_odba$season_index
+nobs2_sd = length(unique(dat_odba$bird_year))
+ids2_sd = unique_birds_odba$id
+years2_sd = unique_birds_odba$year_numeric
+
+# c loop 
+nobs3 <- nrow(dat_feed)
+ids3 <- dat_feed$id
+years3 <- dat_feed$year_numeric
+sub_seasons3 <- dat_feed$season_index
+
 
 # specify GLMMs in BUGS language ----------------------------------------------
 
@@ -290,27 +303,58 @@ model_code <- nimbleCode({
   
   ## priors -------------------------------------------------------------------
   
+  ### alpha  
+  
+  for(i in 1:nind){ # individual index
+    alpha_ODBA[i] ~ dnorm(0, sd = 10)
+  #  alpha_feed[i] ~ dnorm(0, sd = 10)
+
+  }  
+  
+  # ODBA observation variation
+  for(b in 1:nobs2_sd){ 
+    sd_ODBA_obs[ids2_sd[b], years2_sd[b]] ~ dunif(0, 10)
+  } 
+  
   ### Beta coefficients  ------------------------------------------------------
+  # Priors for ODBA betas across all 5 sub-seasons
+  for(s in 1:5) {
+    beta_ODBA_temp[s]         ~ dnorm(0, sd = 10)
+    beta_ODBA_precip[s]       ~ dnorm(0, sd = 10)
+    beta_ODBA_temp_precip[s]  ~ dnorm(0, sd = 10)
+    beta_ODBA_urban[s]        ~ dnorm(0, sd = 10)
+    beta_ODBA_cropland[s]     ~ dnorm(0, sd = 10)
+    beta_ODBA_swamp[s]        ~ dnorm(0, sd = 10)
+    beta_ODBA_marsh[s]        ~ dnorm(0, sd = 10)
+    beta_ODBA_open_water[s]   ~ dnorm(0, sd = 10)
+  }
   
-  # betas for ODBA model
+  # Separate freeze prior for ODBA: season 1 gets normal, seasons 2-5 get tight uniform
+  beta_ODBA_freeze[1] ~ dnorm(0, sd = 10)
   
-  # winter sub-season
-  beta_ODBA_freeze[1] ~ dnorm(0, 0.01)
-  beta_ODBA_temp[1] ~ dunif(-0.000001, 0.0000001)
-  beta_ODBA_precip[1] ~ dnorm(0, 0.01)
-  beta_ODBA_freeze_precip[1] ~ dnorm(0, 0.01)
-  beta_ODBA_temp_precip[1] ~ dunif(-0.000001, 0.0000001)
-  beta_ODBA_hfi[1] ~ dnorm(0, 0.01)
-  beta_ODBA_forest[1] ~ dnorm(0, 0.01)
-  beta_ODBA_peatland[1] ~ dnorm(0, 0.01)
-  beta_ODBA_swamp[1] ~ dnorm(0, 0.01)
-  beta_ODBA_marsh[1] ~ dnorm(0, 0.01)
-  beta_ODBA_open_water[1] ~ dnorm(0, 0.01)
+  for(s in 2:5) {
+    beta_ODBA_freeze[s] ~ dunif(-0.000001, 0.0000001)
+  }
   
   
-  # ### Random Effects ---------------------------------------------------------
-  
-  
+  # # Priors for PTF betas across all 5 sub-seasons
+  # for(s in 1:5) {
+  #   beta_feed_temp[s]         ~ dt(0, 0.40776, 7.763)
+  #   beta_feed_precip[s]       ~ dt(0, 0.40776, 7.763)
+  #   beta_feed_temp_precip[s]  ~ dt(0, 0.40776, 7.763)
+  #   beta_feed_urban[s]        ~ dt(0, 0.40776, 7.763)
+  #   beta_feed_cropland[s]     ~ dt(0, 0.40776, 7.763)
+  #   beta_feed_swamp[s]        ~ dt(0, 0.40776, 7.763)
+  #   beta_feed_marsh[s]        ~ dt(0, 0.40776, 7.763)
+  #   beta_feed_open_water[s]   ~ dt(0, 0.40776, 7.763)
+  # }
+  # 
+  # # Separate freeze prior for feed: season 1 gets normal, seasons 2-5 get tight uniform
+  # beta_feed_freeze[1] ~ dt(0, 0.40776, 7.763)
+  # for(s in 2:5) {
+  #   beta_feed_freeze[s] ~ dunif(-0.000001, 0.0000001)
+  # }
+
   ## likelihoods --------------------------------------------------------------
 
 
@@ -328,15 +372,32 @@ model_code <- nimbleCode({
       beta_ODBA_temp[sub_seasons2[b]] * temp2[b] + 
       beta_ODBA_temp_precip[sub_seasons2[b]] * temp2[b] * precip2[b] +
       beta_ODBA_freeze[sub_seasons2[b]] * freeze2[b] + 
-      beta_ODBA_urban[sub_seasons2[b]] * forest2[b] +
-      beta_ODBA_peatland[sub_seasons2[b]] * peatland2[b] +
+      beta_ODBA_urban[sub_seasons2[b]] * urban2[b] +
+      beta_ODBA_cropland[sub_seasons2[b]] * cropland2[b] +
       beta_ODBA_swamp[sub_seasons2[b]] * swamp2[b] +
       beta_ODBA_marsh[sub_seasons2[b]] * marsh2[b] +
       beta_ODBA_open_water[sub_seasons2[b]] * open_water2[b] 
   } # b
   
-  
-  ## effects of weather and habitat use on ODBA
+  ## effects of weather and habitat use on PTF
+  # observation variation
+  # 
+  # for(c in 1:nobs3){ # individual/year/sub-season index
+  #   feed[c] ~ dbin(p_feed[ids3[c], years3[c], sub_seasons3[c]], n[c])
+  #   
+  #   # link function
+  #   logit(p_feed[ids3[c], years3[c], sub_seasons3[c]]) <-
+  #     alpha_feed[ids3[c]] +
+  #     beta_feed_precip[sub_seasons3[c]] * precip3[c] +
+  #     beta_feed_temp[sub_seasons3[c]] * temp3[c] +
+  #     beta_feed_temp_precip[sub_seasons3[c]] * temp3[c] * precip3[c] + # ilsa had these coded as 2, i'm going to change to 3
+  #     beta_feed_freeze[sub_seasons3[c]] * freeze3[c] +
+  #     beta_feed_urban[sub_seasons3[c]] * urban3[c] +
+  #     beta_feed_cropland[sub_seasons3[c]] * cropland3[c] +
+  #     beta_feed_swamp[sub_seasons3[c]] * swamp3[c] +
+  #     beta_feed_marsh[sub_seasons3[c]] * marsh3[c] +
+  #     beta_feed_open_water[sub_seasons3[c]] * open_water3[c]
+  # } # c
 
 })
 
@@ -345,75 +406,131 @@ model_code <- nimbleCode({
 
 # initial values
 
-nimble_inits <- function(){
-  bander_inits <- rnorm(nbander - 1, 0, 1)
-  day_inits <- rnorm(nday - 1, 0, 1)
-  age_inits <- rnorm(1, 0, 1)
-  list(beta_bander_tmp = c(bander_inits, -sum(bander_inits)),
-       beta_day_tmp = c(day_inits, -sum(day_inits)),
-       beta_age = c(age_inits, -age_inits),
-       beta_mean_mintemp_prev5 = rnorm(1, 0, 1),
-       beta_weight = rnorm(1, 0, 1),
-       sd_state = runif(1, 0.01, 0.4),
-       alpha = rnorm(1, 5, 1))
+na_fill_inits <- function(n_param, na_param, sd){
+  t_inits <- rnorm(n_param, mean = 0, sd = sd)
+  t_inits[na_param] <- NA
+  t_inits
+
 }
 
-# constants
+inits <- function() {
+  list(
+    alpha_ODBA = rnorm(nimble_constants$nind, 0, 1),
+  #   alpha_feed = rnorm(nimble_constants$nind, 0, 1),
+    
+    # Initialize observation SDs (must be positive, matching your dunif(0, 10) prior)
+    # Note: Adjust dimensions of this matrix to match max(ids2_sd) and max(years2_sd) if needed
+    sd_ODBA_obs = array(runif(max(nimble_constants$ids2_sd) * max(nimble_constants$years2_sd), 0.5, 2), 
+                        dim = c(max(nimble_constants$ids2_sd), max(nimble_constants$years2_sd))),
+    
+    # Betas across the 5 sub-seasons ODBA
+    beta_ODBA_temp = rnorm(5, 0, 0.5),
+    beta_ODBA_precip = rnorm(5, 0, 0.5),
+    beta_ODBA_temp_precip = rnorm(5, 0, 0.5),
+    beta_ODBA_freeze = na_fill_inits(5, c(2, 3, 4, 5), sd = 1), # this should mean only season 1 is looked at
+    beta_ODBA_urban = rnorm(5, 0, 0.5),
+    beta_ODBA_cropland = rnorm(5, 0, 0.5),
+    beta_ODBA_swamp = rnorm(5, 0, 0.5),
+    beta_ODBA_marsh = rnorm(5, 0, 0.5),
+    beta_ODBA_open_water = rnorm(5, 0, 0.5) #, 
+    
+    # Betas across the 5 sub-seasons PTF
+    
+    # beta_feed_temp = rnorm(5, 0, 0.5),
+    # beta_feed_precip = rnorm(5, 0, 0.5),
+    # beta_feed_temp_precip = rnorm(5, 0, 0.5),
+    # beta_feed_freeze = na_fill_inits(5, c(2, 3, 4, 5), sd = 1), # this should mean only season 1 is looked at
+    # beta_feed_urban = rnorm(5, 0, 0.5),
+    # beta_feed_cropland = rnorm(5, 0, 0.5),
+    # beta_feed_swamp = rnorm(5, 0, 0.5),
+    # beta_feed_marsh = rnorm(5, 0, 0.5),
+    # beta_feed_open_water = rnorm(5, 0, 0.5)
+  )
+}
+
+# constants (dimensions and indexing vectors that do not change during sampling)
 nimble_constants <- list(
-  nobs = nobs,
-  # nyear = nyear,
-  nday = nday,
-  # nage = nage, 
-  nbander = nbander,
-  nstate = nstate,
-  bander_index = data_model$bander_index_new, # Use new index where "other" = 54
-  # year_index = data_model$year_index,
-  day_index = data_model$day_index, 
-  # age_index = data_model$age_index,
-  age_cat = data_model$age_index,
-  state_index = data_model$state_index,
-  interval = data_model$interval,
-  mean_mintemp_prev5 = as.numeric(data_model$mean_mintemp_prev5_scaled),
-  #julian = as.numeric(data_model$julian_date_scaled),
-  weight = as.numeric(data_model$PCA_weight_scaled)
-)
+    nind = nind,
+    ### b loop (weather and habitat on odba)
+    nobs2 = nobs2,             
+    nobs2_sd = length(ids2_sd),           
+    ids2 = ids2,                          
+    years2 = years2,                   
+    sub_seasons2 = sub_seasons2,    
+    ids2_sd = ids2_sd,                    
+    years2_sd = years2_sd #,      
+    ### c loop (weather and habitat on ptf)
+    # nobs3 = nobs3, 
+    # ids3 = dat_feed$id,
+    # years3 = dat_feed$year_numeric,
+    # sub_seasons3 = dat_feed$season_index
+  )
+
 
 # data
-nimble_data <- list(
-  survival = data_model$survived
+
+data <- list(
+  
+  # b loop (ODBA)
+  log_ODBA = dat_odba$log_odba,                  # Response variable vector (length nobs2)
+  precip2 = dat_odba$scaled_mean_precip,                    # Precipitation covariate
+  temp2 = dat_odba$scaled_min_temp,                        # Temperature covariate
+  freeze2 = dat_odba$scaled_freeze_events,                    # Freeze binary/covariate
+  urban2 = dat_odba$scaled_prop_urban,                      # Urban habitat use
+  cropland2 = dat_odba$scaled_prop_cropland,                # Cropland habitat use
+  swamp2 = dat_odba$scaled_prop_swamp,                      # Swamp habitat use
+  marsh2 = dat_odba$scaled_prop_marsh,                      # Marsh habitat use
+  open_water2 = dat_odba$scaled_prop_open_water #,             # Open water habitat use
+# 
+#   # c loop (PTF)
+#   precip3 = dat_feed$scaled_mean_precip, 
+#   temp3 = dat_feed$scaled_min_temp, 
+#   freeze3 = dat_feed$scaled_freeze_events, 
+#   urban3 = dat_feed$scaled_prop_urban, 
+#   cropland3 = dat_feed$scaled_prop_cropland, 
+#   swamp3 = dat_feed$scaled_prop_swamp, 
+#   marsh3 = dat_feed$scaled_prop_marsh, 
+#   open_water3 = dat_feed$scaled_prop_open_water, 
+#   feed = dat_feed$feed_fixes_corrected_season,
+#   n = dat_feed$total_acc_fixes_corrected_season
 )
 
 # run NIMBLE model in series ---------------------------
 nc <- 3
 
-# nimble_inits <- inits_function() 
-
-## quickly check collinearity 
-
-model <- glmer(
-  survived ~ 
-    bander_index + 
-    day_index + 
-    mean_mintemp_prev5_scaled +
-    PCA_weight_scaled +
-    age +
-    (1 | partner_agency) +
-    offset(log(interval)),
-  family = binomial(link = "cloglog"),
-  data = data_model
-)
-
-vif(model)
-
 # build model
 model <- nimbleModel(code = model_code, 
                      constants = nimble_constants,  
-                     data =  nimble_data, 
+                     data =  data, 
                      buildDerivs = T)
+
+parameters_to_save <- c( 
+  "beta_ODBA_temp", 
+  "beta_ODBA_precip", 
+  "beta_ODBA_freeze",
+  "beta_ODBA_temp_precip",
+  "beta_ODBA_urban", 
+  "beta_ODBA_cropland", 
+  "beta_ODBA_swamp", 
+  "beta_ODBA_marsh", 
+  "beta_ODBA_open_water" #, 
+  # "beta_feed_temp", 
+  # "beta_feed_precip", 
+  # "beta_feed_freeze",
+  # "beta_feed_temp_precip",
+  # "beta_feed_urban", 
+  # "beta_feed_cropland", 
+  # "beta_feed_swamp", 
+  # "beta_feed_marsh", 
+  # "beta_feed_open_water"
+)
+
 
 # configure MCMC
 mcmc_Conf  <- configureHMC(model, print = F)
-mcmc_Conf$setMonitors(c("alpha", "beta_age", "beta_bander", "beta_day", "beta_mean_mintemp_prev5", "beta_weight", "eps_state", "sd_state"))
+
+mcmc_Conf$resetMonitors()
+mcmc_Conf$addMonitors(parameters_to_save)
 
 # build MCMC
 modelMCMC  <- buildMCMC(mcmc_Conf)
@@ -424,8 +541,79 @@ CmodelMCMC <- compileNimble(modelMCMC, project = model)
 
 # run model
 samples <- runMCMC(CmodelMCMC,
-                   niter = 10000,
-                   nburnin = 2000,
+                   niter = 300,
+                   nburnin = 40,
                    thin = 10,
+                   inits = inits,
                    nchains = nc,
                    samplesAsCodaMCMC = T)
+
+
+# convert to MCMC list
+samples <- list(chain1 = samples[[1]], 
+                chain2 = samples[[2]], 
+                chain3 = samples[[3]])
+
+mcmc_list <- as.mcmc.list(lapply(samples, mcmc))
+
+for(i in 1:3){
+  mcmc_list[[i]] <- mcmc_list[[i]][ , which(is.na(colSums(mcmc_list[[i]])) == F)]
+}
+
+# assess convergence
+
+rhat <- gelman.diag(mcmc_list, multivariate = F)
+rhat <- unlist(rhat$psrf)
+rhat[which(rhat[,1] > 1.1), ]
+
+MCMCplot(samples)
+
+
+# Calculate tail probabilities
+# See proportion of samples above or below 0 (above for negative effects, below for positive effects)
+prop_above_or_below <- function(x) {
+  if(median(x) > 0) {return(mean(x < 0))}
+  else {return(mean(x > 0))}
+}
+
+# calculate summary statistics
+sum_stats <- MCMCsummary(mcmc_list, func = function(x) prop_above_or_below(x), func_name = "prop") %>%
+  tibble::rownames_to_column(var = "parameter")
+
+
+all_samples <- as.mcmc(do.call(rbind, samples))
+
+p_tails <- sum_stats %>%
+  dplyr::select(parameter, prop)
+
+samples_long <- all_samples %>%
+  as.data.frame() %>%
+  pivot_longer(
+    everything(), 
+    names_to = "parameter", 
+    values_to = "posterior"
+  ) %>%
+  left_join(p_tails, by = "parameter") 
+
+odba_habitat <- samples_long %>%
+  extract(
+    parameter, 
+    into = c("model", "habitat", "season"), 
+    regex = "^beta_([^_]+)_(.*?)\\[([0-9]+)\\]$") %>%
+  filter(habitat %in% c("cropland", "urban", "marsh", "swamp", "open_water"))
+
+odba_weather <- samples_long %>%
+  extract(
+    parameter, 
+    into = c("model", "weather", "season"), 
+    regex = "^beta_([^_]+)_(.*?)\\[([0-9]+)\\]$") %>%
+  filter(weather %in% c("freeze", "precip", "temp"), 
+         model == "ODBA")
+
+
+
+ggplot(odba_weather) + 
+  stat_slab(aes(x = weather, y = posterior, color = season, fill = season),
+            side = "both",
+            position = position_dodge(width = 0.7),
+            linewidth = 0.1) 
