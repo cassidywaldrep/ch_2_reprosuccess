@@ -136,7 +136,7 @@ dat_annual <- dat_annual %>%
   
   # select the columns you actually need
   
-  dplyr::select(id, year_numeric, egg_laying_status, season_combo_index, season_index, log_odba, feed_fixes_corrected_season, total_acc_fixes_corrected_season, scaled_first_day, age, id_annual) %>%
+  dplyr::select(id, year_numeric, egg_laying_status, season_combo_index, season_index, log_odba, feed_fixes_corrected_season, total_acc_fixes_corrected_season, scaled_first_day, age, id_annual, migratory) %>%
   
   # assign nonmigratory birds the mean (0) for arrival date
   
@@ -245,7 +245,7 @@ n_NS_only_dat_annual_birds <- unique(dat_nest_success$id)
 # deal with NAs
 dat_nest_success <- dat_nest_success %>%
   # select the columns you need
-  dplyr::select(id, year_numeric, incubation_status, mig_status, nest_lat, nest_long,
+  dplyr::select(id, year_numeric, incubation_status, migratory, nest_lat, nest_long,
                 scaled_prop_swamp, scaled_prop_marsh, scaled_prop_cropland, scaled_prop_peatland) %>%
   # keep only rows that have no NAs
   drop_na() # removes 2 individuals currently... 
@@ -257,7 +257,7 @@ dat_nest_success <- dat_nest_success %>%
 
 n_NS_na_rem <- unique(dat_nest_success$id)
 
-dat_nest_success %>% group_by(mig_status) %>% count()
+dat_nest_success %>% group_by(migratory) %>% count()
 
 # count number of birds with more than one year of data
 multi_years_NS <- dat_nest_success %>% group_by(id) %>%
@@ -346,7 +346,7 @@ model_code <- nimbleCode({
   for(i in 1:nind){ # individual index
     alpha_ODBA[i] ~ dnorm(0, sd = 10)
     alpha_feed[i] ~ dnorm(0, sd = 10)
-
+    
   }  
   
   # ODBA observation variation
@@ -374,7 +374,7 @@ model_code <- nimbleCode({
     beta_ODBA_freeze[s] ~ dunif(-0.000001, 0.0000001)
   }
   
-  # Priors for PTF betas across all 5 sub-seasons
+  # # Priors for PTF betas across all 5 sub-seasons
   for(s in 1:5) {
     beta_feed_temp[s]         ~ dt(0, 0.40776, 7.763)
     beta_feed_precip[s]       ~ dt(0, 0.40776, 7.763)
@@ -385,7 +385,7 @@ model_code <- nimbleCode({
     beta_feed_marsh[s]        ~ dt(0, 0.40776, 7.763)
     beta_feed_open_water[s]   ~ dt(0, 0.40776, 7.763)
   }
-
+  
   # Separate freeze prior for feed: season 1 gets normal, seasons 2-5 get tight uniform
   beta_feed_freeze[1] ~ dt(0, 0.40776, 7.763)
   for(s in 2:5) {
@@ -397,81 +397,111 @@ model_code <- nimbleCode({
   alpha_global_NP ~ dlogis(0, 1)
   beta_arrival_breed ~ dt(0, 0.40776, 7.763)
   beta_age ~ dt(0, 0.40776, 7.763)
+  # 
+  # # priors for incubation model
+  # 
+  alpha_global_NS ~ dlogis(0, 1)
+  beta_NP ~ dt(0, 0.40776, 7.763)
+  beta_migratory ~ dt(0, 0.40776, 7.763)
+  beta_nest_cropland ~ dt(0, 0.40776, 7.763)
+  beta_nest_peatland ~ dt(0, 0.40776, 7.763)
+  beta_lat ~ dt(0, 0.40776, 7.763)
+  beta_long ~ dt(0, 0.40776, 7.763)
+  beta_nest_swamp ~ dt(0, 0.40776, 7.763)
+  beta_nest_marsh ~ dt(0, 0.40776, 7.763)
+  # 
+  # # priors for brood rearing
+  # 
+  alpha_global_BS ~ dlogis(0, 1)
+  beta_NS ~ dt(0, 0.40776, 7.763)
+  beta_brood_min_temp ~ dt(0, 0.40776, 7.763)
+  beta_brood_precip ~ dt(0, 0.40776, 7.763)
+  beta_brood_temp_precip ~ dt(0, 0.40776, 7.763)
+  beta_brood_city ~ dt(0, 0.40776, 7.763)
+  beta_brood_swamp ~ dt(0, 0.40776, 7.763)
+  beta_brood_marsh ~ dt(0, 0.40776, 7.763)
+  beta_brood_open_water ~ dt(0, 0.40776, 7.763)
+  # 
   
   # mean betas
-  mu_beta_ODBA ~ dnorm(0, sd = 5) 
-  mu_beta_feed ~ dnorm(0, sd = 5) 
+  mu_beta_ODBA ~ dnorm(0, sd = 5)
+  mu_beta_feed ~ dnorm(0, sd = 5)
   
   for(s in 1:n_sub_seasons){ # sub-season index
     beta_ODBA[s] ~ dnorm(mu_beta_ODBA, sd = 5)
     beta_feed[s] ~ dnorm(mu_beta_feed, sd = 5)
-  } 
+  }
+  
   
   # random year effect - propensity
   for(t in 1:nyears){ # year index
-    eps_year_propensity[t] ~ dnorm(0, sd = 5) 
+    eps_year_propensity[t] ~ dnorm(0, sd = 5)     
+    eps_year_nest[t] ~ dnorm(0, sd = 5) 
+    eps_year_brood[t] ~ dnorm(0, sd = 5) 
+    
+    
   }
-
+  
+  # 
   ## likelihoods --------------------------------------------------------------
-
-
+  
+  
   ## effects of weather and habitat use on ODBA
   # observation variation
   
-  for(b in 1:nobs2){ # individual/year/sub-season index
-    log_ODBA[b] ~ dnorm(mu_log_ODBA[ids2[b], years2[b], sub_seasons2[b]], 
-                        sd = sd_ODBA_obs[years2[b]])
+  for (b in 1:nobs2) {
     
-    # link function
-    mu_log_ODBA[ids2[b], years2[b], sub_seasons2[b]] <- 
+    log_ODBA[b] ~ dnorm(
+      mu_log_ODBA[ids2[b], years2[b], sub_seasons2[b]],
+      sd = sd_ODBA_obs[years2[b]]
+    )
+    
+    mu_log_ODBA[ids2[b], years2[b], sub_seasons2[b]] <-
       alpha_ODBA[ids2[b]] +
       beta_ODBA_precip[sub_seasons2[b]] * precip2[b] +
-      beta_ODBA_temp[sub_seasons2[b]] * temp2[b] + 
-      beta_ODBA_temp_precip[sub_seasons2[b]] * temp2[b] * precip2[b] +
-      beta_ODBA_freeze[sub_seasons2[b]] * freeze2[b] + 
+      beta_ODBA_temp[sub_seasons2[b]] * temp2[b] +
+      beta_ODBA_temp_precip[sub_seasons2[b]] *
+      temp2[b] * precip2[b] +
+      beta_ODBA_freeze[sub_seasons2[b]] * freeze2[b] +
       beta_ODBA_urban[sub_seasons2[b]] * urban2[b] +
       beta_ODBA_cropland[sub_seasons2[b]] * cropland2[b] +
       beta_ODBA_swamp[sub_seasons2[b]] * swamp2[b] +
       beta_ODBA_marsh[sub_seasons2[b]] * marsh2[b] +
-      beta_ODBA_open_water[sub_seasons2[b]] * open_water2[b] 
-  } # b
+      beta_ODBA_open_water[sub_seasons2[b]] * open_water2[b]
+  }
   
-  ## effects of weather and habitat use on PTF
-  # observation variation
-
-  for(c in 1:nobs3){ # individual/year/sub-season index
-    feed[c] ~ dbin(p_feed[ids3[c], years3[c], sub_seasons3[c]], n[c])
-
-    # link function
+  
+  for (c in 1:nobs3) {
+    
+    feed[c] ~ dbin(
+      p_feed[ids3[c], years3[c], sub_seasons3[c]],
+      n[c]
+    )
+    
     logit(p_feed[ids3[c], years3[c], sub_seasons3[c]]) <-
       alpha_feed[ids3[c]] +
       beta_feed_precip[sub_seasons3[c]] * precip3[c] +
       beta_feed_temp[sub_seasons3[c]] * temp3[c] +
-      beta_feed_temp_precip[sub_seasons3[c]] * temp3[c] * precip3[c] + # ilsa had these coded as 2, i'm going to change to 3
+      beta_feed_temp_precip[sub_seasons3[c]] *
+      temp3[c] * precip3[c] +
       beta_feed_freeze[sub_seasons3[c]] * freeze3[c] +
       beta_feed_urban[sub_seasons3[c]] * urban3[c] +
       beta_feed_cropland[sub_seasons3[c]] * cropland3[c] +
       beta_feed_swamp[sub_seasons3[c]] * swamp3[c] +
       beta_feed_marsh[sub_seasons3[c]] * marsh3[c] +
       beta_feed_open_water[sub_seasons3[c]] * open_water3[c]
-   } # c
-# 
-#   ## effects of behavior on nesting propensity
-#   for(a in 1:nobs1){ # individual/year index
-#     # p_nest[ids1[a], years1[a]] ~ dbeta(1,1)
-#     NP[a] ~ dbern(p_nest[ids1[a], years1[a]])
-#     
-#   } # a
+  }
   
-  for(a in 1:nobs1){ 
-    NP[a] ~ dbern(p_nest[a])
-  }  
+  for (a in 1:nobs1) {
+    NP[a] ~ dbern(p_nest[ids1[a], years1[a]])
+  }
+  
   
   ## effects of behaviour on NP 1 subseason combo (migratory, complete)
   # this has to be coded differently than Ilsa's model because NIMBLE only allows nice integers in order for the "for" statement
   
   for(z in 1:n_obs_NP_1) {
-    logit(p_nest[obs_NP_1[z]]) <-
+    logit(p_nest[ids1[obs_NP_1[z]], years1[obs_NP_1[z]]]) <-
       alpha_global_NP +
       beta_ODBA[1] * mu_log_ODBA[ids1[obs_NP_1[z]], years1[obs_NP_1[z]], 1] +
       beta_ODBA[2] * mu_log_ODBA[ids1[obs_NP_1[z]], years1[obs_NP_1[z]], 2] +
@@ -491,7 +521,7 @@ model_code <- nimbleCode({
   ## effects of behaviour on NP 2 subseason combo (migratory, missing winter)
   
   for(y in 1:n_obs_NP_2) {
-    logit(p_nest[obs_NP_2[y]]) <-
+    logit(p_nest[ids1[obs_NP_2[y]], years1[obs_NP_2[y]]]) <-
       alpha_global_NP +
       beta_ODBA[2] * mu_log_ODBA[ids1[obs_NP_2[y]], years1[obs_NP_2[y]], 2] +
       beta_ODBA[3] * mu_log_ODBA[ids1[obs_NP_2[y]], years1[obs_NP_2[y]], 3] +
@@ -509,7 +539,7 @@ model_code <- nimbleCode({
   ## effects of behaviour on NP 3 subseason combo (migratory, missing winter and late winter)
   
   for(x in 1:n_obs_NP_3) {
-    logit(p_nest[obs_NP_3[x]]) <-
+    logit(p_nest[ids1[obs_NP_3[x]], years1[obs_NP_3[x]]]) <-
       alpha_global_NP +
       beta_ODBA[3] * mu_log_ODBA[ids1[obs_NP_3[x]], years1[obs_NP_3[x]], 3] +
       beta_ODBA[4] * mu_log_ODBA[ids1[obs_NP_3[x]], years1[obs_NP_3[x]], 4] +
@@ -525,7 +555,7 @@ model_code <- nimbleCode({
   ## effects of behaviour on NP 4 subseason combo (migratory, missing late winter)
   
   for(w in 1:n_obs_NP_4) {
-    logit(p_nest[obs_NP_4[w]]) <-
+    logit(p_nest[ids1[obs_NP_4[w]], years1[obs_NP_4[w]]]) <-
       alpha_global_NP +
       beta_ODBA[1] * mu_log_ODBA[ids1[obs_NP_4[w]], years1[obs_NP_4[w]], 1] +
       beta_ODBA[3] * mu_log_ODBA[ids1[obs_NP_4[w]], years1[obs_NP_4[w]], 3] +
@@ -543,7 +573,7 @@ model_code <- nimbleCode({
   ## effects of behaviour on NP 5 subseason combo (migratory, missing winter - early migration)
   
   for(v in 1:n_obs_NP_5) {
-    logit(p_nest[obs_NP_5[v]]) <-
+    logit(p_nest[ids1[obs_NP_5[v]], years1[obs_NP_5[v]]]) <-
       alpha_global_NP +
       beta_ODBA[4] * mu_log_ODBA[ids1[obs_NP_5[v]], years1[obs_NP_5[v]], 4] +
       beta_ODBA[5] * mu_log_ODBA[ids1[obs_NP_5[v]], years1[obs_NP_5[v]], 5] +
@@ -557,7 +587,7 @@ model_code <- nimbleCode({
   # effects of behaviour on NP 6 subseason combo (nonmigratory, complete)
   
   for(u in 1:n_obs_NP_6) {
-    logit(p_nest[obs_NP_6[u]]) <-
+    logit(p_nest[ids1[obs_NP_6[u]], years1[obs_NP_6[u]]]) <-
       alpha_global_NP +
       beta_ODBA[1] * mu_log_ODBA[ids1[obs_NP_6[u]], years1[obs_NP_6[u]], 1] +
       beta_ODBA[5] * mu_log_ODBA[ids1[obs_NP_6[u]], years1[obs_NP_6[u]], 5] +
@@ -570,112 +600,201 @@ model_code <- nimbleCode({
   # effects of behaviour on NP 7 subseason combo (nonmigratory, complete)
   
   for(r in 1:n_obs_NP_7) {
-    logit(p_nest[obs_NP_7[r]]) <-
+    logit(p_nest[ids1[obs_NP_7[r]], years1[obs_NP_7[r]]]) <-
       alpha_global_NP +
       beta_ODBA[5] * mu_log_ODBA[ids1[obs_NP_7[r]], years1[obs_NP_7[r]], 5] +
       beta_feed[5] *  logit(p_feed[ids1[obs_NP_7[r]], years1[obs_NP_7[r]], 5]) +
       beta_age * age[obs_NP_7[r]] +
       eps_year_propensity[years1[obs_NP_7[r]]]
-  } 
+  }
+  
   
   ## effects of habitat on nesting success
+  
   for(d in 1:nobs4){ # individual/year index
     NS[d] ~ dbern(p_hatch[ids4[d], years4[d]])
+    
+    # link function
+    logit(p_hatch[ids4[d], years4[d]]) <- 
+      alpha_global_NS +
+      beta_NP * logit(p_nest[ids4[d], years4[d]]) +
+      beta_migratory * migratory[d] +
+      beta_nest_cropland * nest_cropland[d] +
+      beta_nest_peatland * nest_peatland[d] +
+      beta_lat * nest_lat[d] +
+      beta_long * nest_long[d] +
+      beta_nest_swamp * nest_swamp[d] +
+      beta_nest_marsh * nest_marsh[d] +
+      eps_year_nest[years4[d]] 
+    # d
+    
   }
+  
+  ## effects of habitat amd weather on brood success
+  for(e in 1:nobs5){ # individual/year index
+    BS[e] ~ dbern(p_fledge[ids5[e], years5[e]])
+    
+    # link function
+    logit(p_fledge[ids5[e], years5[e]]) <-
+      alpha_global_BS +
+      beta_NS * logit(p_hatch[ids5[e], years5[e]]) +
+      beta_brood_min_temp * brood_min_temp[e] +
+      beta_brood_precip * brood_precip[e] +
+      beta_brood_temp_precip * brood_min_temp[e] * brood_precip[e] +
+      beta_brood_city * brood_city[e] +
+      beta_brood_swamp * brood_swamp[e] +
+      beta_brood_marsh * brood_marsh[e] +
+      beta_brood_open_water * brood_open_water[e] +
+      eps_year_brood[years5[e]]
+  } # e
+  
   
 })
 
 
 # set up NIMBLE model ---------------------------------------------------------
 
-# initial values
+# constants (dimensions and indexing vectors that do not change during sampling)
+nimble_constants <- list(
+  nind = nind,
+  nyears = length(unique(dat_odba$year_numeric)),
+  n_sub_seasons = length(unique(dat_odba$season_index)),
+  
+  
+  ### b loop (weather and habitat on odba)
+  nobs2 = nobs2,             
+  ids2 = ids2,                          
+  years2 = years2,                   
+  sub_seasons2 = sub_seasons2,    
+  
+  ### c loop (weather and habitat on ptf)
+  nobs3 = nobs3,
+  ids3 = dat_feed$id,
+  years3 = years3,                   
+  sub_seasons3 = dat_feed$season_index, 
+  
+  ## a loop (nesting propensity)
+  
+  nobs1 = nrow(dat_annual),
+  ids1 = dat_annual$id,
+  years1 = dat_annual$year_numeric,
+  
+  ## d loop (fti)
+  
+  nobs4 = nrow(dat_nest_success),
+  ids4 = dat_nest_success$id, 
+  years4 = dat_nest_success$year_numeric, 
+  
+  ## e loop (brood rearing)
+  nobs5 = nrow(dat_brood_success),
+  ids5 = dat_brood_success$id, 
+  years5 = dat_brood_success$year_numeric,
+  
+  n_obs_NP_1 = length(which(dat_annual$season_combo_index == 1)),
+  obs_NP_1 = which(dat_annual$season_combo_index == 1),
+  n_obs_NP_2 = length(which(dat_annual$season_combo_index==2)), 
+  obs_NP_2 = which(dat_annual$season_combo_index==2), 
+  n_obs_NP_3 = length(which(dat_annual$season_combo_index==3)), 
+  obs_NP_3 = which(dat_annual$season_combo_index==3), 
+  n_obs_NP_4 = length(which(dat_annual$season_combo_index==4)), 
+  obs_NP_4 = which(dat_annual$season_combo_index==4), 
+  n_obs_NP_5 = length(which(dat_annual$season_combo_index==5)),
+  obs_NP_5 = which(dat_annual$season_combo_index==5), 
+  n_obs_NP_6 = length(which(dat_annual$season_combo_index==6)), 
+  obs_NP_6 = which(dat_annual$season_combo_index==6), 
+  n_obs_NP_7 = length(which(dat_annual$season_combo_index==7)),
+  obs_NP_7 = which(dat_annual$season_combo_index==7)
+  
+)
 
-na_fill_inits <- function(n_param, na_param, sd){
-  t_inits <- rnorm(n_param, mean = 0, sd = sd)
-  t_inits[na_param] <- NA
-  t_inits
-}
+# initial values
 
 inits <- function() {
   list(
-    alpha_ODBA = rnorm(nimble_constants$nind, 0, 0.1),       # Shrink from 1 to 0.1
-    alpha_feed = rnorm(nimble_constants$nind, 0, 0.1),       # Shrink from 1 to 0.1
-    alpha_global_NP = rnorm(1, 0, 0.1),                    # Shrink from 1 to 0.1
-    eps_year_propensity = rnorm(nimble_constants$nyears, 0, 0.05), # Shrink from 0.5 to 0.05
-    # Betas across the 5 sub-seasons ODBA
+    # Individual intercepts
+    alpha_ODBA = rnorm(nimble_constants$nind, 0, 0.1),
+    alpha_feed = rnorm(nimble_constants$nind, 0, 0.1),
+    
+    # ODBA coefficients
     beta_ODBA_temp = rnorm(5, 0, 0.5),
     beta_ODBA_precip = rnorm(5, 0, 0.5),
     beta_ODBA_temp_precip = rnorm(5, 0, 0.5),
-    beta_ODBA_freeze = na_fill_inits(5, c(2, 3, 4, 5), sd = 1), # this should mean only season 1 is looked at
+    beta_feed_freeze = c(
+      rnorm(1, 0, 0.5),
+      runif(4, -0.000001, 0.0000001)
+    ),
+    
+    beta_ODBA_freeze = c(
+      rnorm(1, 0, 0.5),
+      runif(4, -0.000001, 0.0000001)
+    ),
     beta_ODBA_urban = rnorm(5, 0, 0.5),
     beta_ODBA_cropland = rnorm(5, 0, 0.5),
     beta_ODBA_swamp = rnorm(5, 0, 0.5),
     beta_ODBA_marsh = rnorm(5, 0, 0.5),
-    beta_ODBA_open_water = rnorm(5, 0, 0.5), 
+    beta_ODBA_open_water = rnorm(5, 0, 0.5),
     
-    # Betas across the 5 sub-seasons PTF
-    
+    # Feeding coefficients
     beta_feed_temp = rnorm(5, 0, 0.5),
     beta_feed_precip = rnorm(5, 0, 0.5),
     beta_feed_temp_precip = rnorm(5, 0, 0.5),
-    beta_feed_freeze = na_fill_inits(5, c(2, 3, 4, 5), sd = 1), # this should mean only season 1 is looked at
     beta_feed_urban = rnorm(5, 0, 0.5),
     beta_feed_cropland = rnorm(5, 0, 0.5),
     beta_feed_swamp = rnorm(5, 0, 0.5),
     beta_feed_marsh = rnorm(5, 0, 0.5),
     beta_feed_open_water = rnorm(5, 0, 0.5),
     
-    # betas for nesting propensity
+    # Nesting propensity
+    alpha_global_NP = rlogis(1, 0, 1),
     beta_arrival_breed = rnorm(1, 0, 0.5),
-    beta_age = rnorm(1, 0, 0.5)
+    beta_age = rnorm(1, 0, 0.5),
+    eps_year_propensity = rnorm(nimble_constants$nyears, 0, 1),
+    
+    # Incubation
+    alpha_global_NS = rlogis(1, 0, 1),
+    beta_migratory = rnorm(1, 0, 0.5), 
+    beta_nest_cropland =  rnorm(1, 0, 1),
+    beta_nest_peatland =  rnorm(1, 0, 1),
+    beta_nest_swamp =  rnorm(1, 0, 1),
+    beta_nest_marsh =  rnorm(1, 0, 1),
+    beta_lat = rnorm(1, 0, 1), 
+    beta_long = rnorm(1, 0, 1), 
+    beta_NP = rnorm(1, 0, 1),
+    eps_year_nest = rnorm(nimble_constants$nyears, 0, 1),
+    
+    # Brood rearing
+    alpha_global_BS = rlogis(1, 0, 1),
+    beta_brood_min_temp =  rnorm(1, 0, 1),
+    beta_brood_precip =  rnorm(1, 0, 1),
+    beta_brood_temp_precip =  rnorm(1, 0, 1),
+    beta_brood_city =  rnorm(1, 0, 1),
+    beta_brood_marsh =  rnorm(1, 0, 1),
+    beta_brood_open_water =  rnorm(1, 0, 1),
+    beta_brood_swamp = rnorm(1, 0, 1),
+    beta_NS = rnorm(1, 0, 1),
+    eps_year_brood = rnorm(nimble_constants$nyears, 0, 1),
+    
+    # Hierarchical coefficients
+    mu_beta_ODBA = rnorm(1, 0, 1),
+    mu_beta_feed = rnorm(1, 0, 1),
+    beta_ODBA = rnorm(nimble_constants$n_sub_seasons, 0, 0.5),
+    beta_feed = rnorm(nimble_constants$n_sub_seasons, 0, 0.5),
+    
+    
+    # ODBA observation standard deviations
+    sd_ODBA_obs = runif(nimble_constants$nyears, 0.1, 2)
   )
 }
-
-# constants (dimensions and indexing vectors that do not change during sampling)
-nimble_constants <- list(
-  nind_annual = max(dat_annual$id_annual), 
-    nind = nind,
-    n_sub_seasons = length(unique(dat_odba$season_index)),
-    nyears = length(unique(dat_odba$year_numeric)),
-    ### b loop (weather and habitat on odba)
-    nobs2 = nobs2,             
-    nobs2_sd = length(ids2_sd),           
-    ids2 = ids2,                          
-    years2 = years2,                   
-    sub_seasons2 = sub_seasons2,    
-    ids2_sd = ids2_sd,                    
-    years2_sd = years2_sd,      
-    ### c loop (weather and habitat on ptf)
-    nobs3 = nobs3,
-    ids3 = dat_feed$id,
-    years3 = dat_feed$year_numeric,
-    sub_seasons3 = dat_feed$season_index, 
-    
-    nobs1 = nrow(dat_annual),
-    ids1 = dat_annual$id,
-    years1 = dat_annual$year_numeric,
-    
-    # season combinations
-    n_obs_NP_1 = length(which(dat_annual$season_combo_index == 1)),
-    obs_NP_1 = which(dat_annual$season_combo_index == 1),
-    n_obs_NP_2 = length(which(dat_annual$season_combo_index==2)), 
-    obs_NP_2 = which(dat_annual$season_combo_index==2), 
-    n_obs_NP_3 = length(which(dat_annual$season_combo_index==3)), 
-    obs_NP_3 = which(dat_annual$season_combo_index==3), 
-    n_obs_NP_4 = length(which(dat_annual$season_combo_index==4)), 
-    obs_NP_4 = which(dat_annual$season_combo_index==4), 
-    n_obs_NP_5 = length(which(dat_annual$season_combo_index==5)),
-    obs_NP_5 = which(dat_annual$season_combo_index==5), 
-    n_obs_NP_6 = length(which(dat_annual$season_combo_index==6)), 
-    obs_NP_6 = which(dat_annual$season_combo_index==6), 
-    n_obs_NP_7 = length(which(dat_annual$season_combo_index==7)),
-    obs_NP_7 = which(dat_annual$season_combo_index==7)
-     )
 
 
 # data
 
 data <- list(
+  
+  # a loop (nesting propensity)
+  arrival_day_breed = dat_annual$scaled_arrival_day, 
+  age = dat_annual$age,
+  NP = dat_annual$egg_laying_status,
   
   # b loop (ODBA)
   log_ODBA = dat_odba$log_odba,                  # Response variable vector (length nobs2)
@@ -686,8 +805,8 @@ data <- list(
   cropland2 = dat_odba$scaled_prop_cropland,                # Cropland habitat use
   swamp2 = dat_odba$scaled_prop_swamp,                      # Swamp habitat use
   marsh2 = dat_odba$scaled_prop_marsh,                      # Marsh habitat use
-  open_water2 = dat_odba$scaled_prop_open_water,             # Open water habitat use
-
+  open_water2 = dat_odba$scaled_prop_open_water,            # Open water habitat use
+  
   # c loop (PTF)
   precip3 = dat_feed$scaled_mean_precip,
   temp3 = dat_feed$scaled_min_temp,
@@ -698,12 +817,29 @@ data <- list(
   marsh3 = dat_feed$scaled_prop_marsh,
   open_water3 = dat_feed$scaled_prop_open_water,
   feed = dat_feed$feed_fixes_corrected_season,
-  n = dat_feed$total_acc_fixes_corrected_season, 
-
-  # a loop (nesting propensity)
-  arrival_day_breed = dat_annual$scaled_arrival_day, 
-  age = dat_annual$age
-
+  n = dat_feed$total_acc_fixes_corrected_season,
+  
+  ## d loop (FTI)
+  
+  NS = dat_nest_success$incubation_status,
+  migratory = dat_nest_success$migratory-1,
+  nest_lat = dat_nest_success$scaled_lat, 
+  nest_long = dat_nest_success$scaled_long,
+  nest_cropland = dat_nest_success$scaled_prop_cropland,
+  nest_peatland = dat_nest_success$scaled_prop_peatland,
+  nest_swamp = dat_nest_success$scaled_prop_swamp,
+  nest_marsh = dat_nest_success$scaled_prop_marsh,
+  
+  ## e loop (brood rearing)
+  
+  BS = dat_brood_success$brood_status,
+  brood_min_temp = dat_brood_success$scaled_min_temp,
+  brood_precip = dat_brood_success$scaled_mean_precip, 
+  brood_city = dat_brood_success$scaled_city,
+  brood_swamp = dat_brood_success$scaled_prop_swamp, 
+  brood_marsh = dat_brood_success$scaled_prop_marsh, 
+  brood_open_water = dat_brood_success$scaled_prop_open_water
+  
 )
 
 # run NIMBLE model in series ---------------------------
@@ -713,9 +849,20 @@ nc <- 3
 model <- nimbleModel(code = model_code, 
                      constants = nimble_constants,  
                      data =  data, 
+                     inits = inits(),
                      buildDerivs = T)
 
+
 parameters_to_save <- c( 
+  # alphas
+  "alpha_ODBA", 
+  "alpha_feed",
+  
+  "alpha_global_NP",
+  "alpha_global_NS",
+  "alpha_global_BS",
+  
+  # betas
   "beta_ODBA_temp", 
   "beta_ODBA_precip", 
   "beta_ODBA_freeze",
@@ -733,9 +880,30 @@ parameters_to_save <- c(
   "beta_feed_cropland",
   "beta_feed_swamp",
   "beta_feed_marsh",
-  "beta_feed_open_water", 
+  "beta_feed_open_water",
   "beta_arrival_breed", 
-  "beta_age"
+  "beta_age", 
+  "beta_NP", 
+  "beta_migratory",
+  "beta_nest_cropland",
+  "beta_nest_peatland",
+  "beta_lat",
+  "beta_long",
+  "beta_nest_swamp",
+  "beta_nest_marsh", 
+  "beta_brood_min_temp", 
+  "beta_brood_precip", 
+  "beta_brood_temp_precip", 
+  "beta_brood_city", 
+  "beta_brood_swamp", 
+  "beta_brood_marsh", 
+  "beta_brood_open_water",
+  
+  # hierarchical
+  "beta_ODBA", 
+  "beta_feed",
+  "mu_beta_ODBA",
+  "mu_beta_feed"
 )
 
 
@@ -754,12 +922,14 @@ CmodelMCMC <- compileNimble(modelMCMC, project = model)
 
 # run model
 samples <- runMCMC(CmodelMCMC,
-                   niter = 12000,
-                   nburnin = 2400,
+                   niter = 10000,
+                   nburnin = 2000,
                    thin = 10,
                    nchains = nc,
+                   inits = inits,
                    samplesAsCodaMCMC = T)
 
+save(samples, file = "results/rough_ns_fac_20OCT2026_50000.RData")
 
 # convert to MCMC list
 samples <- list(chain1 = samples[[1]], 
@@ -781,7 +951,7 @@ rhat[which(rhat[,1] > 1.1), ]
 MCMCplot(samples)
 
 MCMCtrace(mcmc_list, type = "trace",
-          filename = paste0("results/traceplots/practicefac_traceplots_20Oct2026.pdf"))
+          filename = paste0("results/traceplots/practicefac_traceplots_20Oct2026_50000.pdf"))
 
 # Calculate tail probabilities
 # See proportion of samples above or below 0 (above for negative effects, below for positive effects)
@@ -808,6 +978,24 @@ samples_long <- all_samples %>%
     values_to = "posterior"
   ) %>%
   left_join(p_tails, by = "parameter") 
+
+nest <- samples_long %>%
+filter(parameter %in% c("beta_lat", "beta_long", "beta_migratory", "beta_nest_cropland", "beta_nest_marsh", "beta_nest_peatland", "beta_nest_swamp"))
+
+early <- samples_long %>%
+  filter(parameter %in% c("beta_age", "beta_arrival_breed"))
+
+ggplot(nest, aes(x = parameter, y = posterior)) +  
+  geom_violin(
+    position = position_dodge(width = 0.7),
+    scale = "width",   # Ensures all violins scale uniformly so they look neat
+    trim = FALSE,      # Prevents cutting off the tails of the distribution
+    linewidth = 0.5,
+    alpha = 0.6
+  ) +
+  theme_minimal() +
+  geom_hline(yintercept = 0)
+  
 
 odba_habitat <- samples_long %>%
   extract(
