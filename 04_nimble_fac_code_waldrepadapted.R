@@ -64,6 +64,8 @@ input_data_scale <- input_data %>%
          scaled_prop_open_water = as.numeric(scale(water)),
          scaled_first_day = as.numeric(scale(julian_arrival)),
          scaled_city=as.numeric(scale(city_center_proportion)),
+         scaled_lat = as.numeric(scale(nest_lat)), 
+         scaled_long = as.numeric(scale(nest_long)),
          log_odba = log(mean_ODBA_season), 
          year_numeric = as.numeric(as.factor(year)), 
          migratory = as.numeric(factor(mig_status, levels = c("No", "Yes"))),
@@ -245,7 +247,7 @@ n_NS_only_dat_annual_birds <- unique(dat_nest_success$id)
 # deal with NAs
 dat_nest_success <- dat_nest_success %>%
   # select the columns you need
-  dplyr::select(id, year_numeric, incubation_status, migratory, nest_lat, nest_long,
+  dplyr::select(id, year_numeric, incubation_status, migratory, scaled_lat, scaled_long,
                 scaled_prop_swamp, scaled_prop_marsh, scaled_prop_cropland, scaled_prop_peatland) %>%
   # keep only rows that have no NAs
   drop_na() # removes 2 individuals currently... 
@@ -855,9 +857,9 @@ model <- nimbleModel(code = model_code,
 
 parameters_to_save <- c( 
   # alphas
-  "alpha_ODBA", 
-  "alpha_feed",
-  
+  # "alpha_ODBA", 
+  # "alpha_feed",
+  # 
   "alpha_global_NP",
   "alpha_global_NS",
   "alpha_global_BS",
@@ -910,6 +912,28 @@ parameters_to_save <- c(
 # configure MCMC
 mcmc_Conf  <- configureMCMC(model, print = F)
 
+mcmc_Conf$removeSamplers(c('beta_ODBA','beta_feed','alpha_global_NP', 'beta_NP', 'alpha_global_NS', 'alpha_global_BS'))
+mcmc_Conf$printSamplers()
+
+# mcmc_Conf$addSampler(target = c('beta_ODBA','beta_feed','alpha_global_NP'), # beta odba, beta feed, alpha_global_np
+#                 type = 'sampler_AF_slice')
+# 
+# # correlated within submodels
+# mcmc_Conf$addSampler(target = c('beta_NP', 'alpha_global_NS', 'alpha_global_BS'), # beta_NP, alpha_global_NS
+#                 type = 'sampler_AF_slice')
+
+# going to them all together since hierarchnically linked
+
+mcmc_Conf$addSampler(target = c('beta_ODBA','beta_feed','alpha_global_NP', 'beta_NP', 'alpha_global_NS', 'alpha_global_BS'), # beta odba, beta feed, alpha_global_np
+                     type = 'sampler_AF_slice', 
+                     control = list(adaptInterval = 100))
+
+
+# mcmc_Conf$addSampler(target = c('alpha_global_BS'), # alpha_global_BS
+#                 type = 'sampler_slice') # slice
+
+# if it's just one parameter within model, use "slice" ?? potentially
+
 mcmc_Conf$resetMonitors()
 mcmc_Conf$addMonitors(parameters_to_save)
 
@@ -920,16 +944,21 @@ modelMCMC  <- buildMCMC(mcmc_Conf)
 Cmodel     <- compileNimble(model)
 CmodelMCMC <- compileNimble(modelMCMC, project = model)
 
-# run model
+# AF slice sampler in NIMBLE
+# use with correlated parameters
+
+
 samples <- runMCMC(CmodelMCMC,
-                   niter = 10000,
-                   nburnin = 2000,
-                   thin = 10,
+                   niter = 300000,
+                   nburnin = 60000,
+                   thin = 15,
                    nchains = nc,
                    inits = inits,
-                   samplesAsCodaMCMC = T)
+                   samplesAsCodaMCMC = T) # started at 9:47
 
-save(samples, file = "results/rough_ns_fac_20OCT2026_50000.RData")
+save(samples, file = "results/full_fac_26OCT2026_300000_updatedsampler_adapt_alltogether.RData")
+
+load("results/full_fac_21OCT2026_100000.RData")
 
 # convert to MCMC list
 samples <- list(chain1 = samples[[1]], 
@@ -948,10 +977,10 @@ rhat <- gelman.diag(mcmc_list, multivariate = F)
 rhat <- unlist(rhat$psrf)
 rhat[which(rhat[,1] > 1.1), ]
 
-MCMCplot(samples)
+#MCMCplot(samples)
 
 MCMCtrace(mcmc_list, type = "trace",
-          filename = paste0("results/traceplots/practicefac_traceplots_20Oct2026_50000.pdf"))
+          filename = paste0("results/traceplots/full_fac_26OCT2026_300000_adapt_updatedsampler_alltogether.pdf"))
 
 # Calculate tail probabilities
 # See proportion of samples above or below 0 (above for negative effects, below for positive effects)
@@ -963,6 +992,8 @@ prop_above_or_below <- function(x) {
 # calculate summary statistics
 sum_stats <- MCMCsummary(mcmc_list, func = function(x) prop_above_or_below(x), func_name = "prop") %>%
   tibble::rownames_to_column(var = "parameter")
+
+write.csv(sum_stats, "results/summarystats_fac_26Oct2026_fullrun.csv")
 
 
 all_samples <- as.mcmc(do.call(rbind, samples))
@@ -979,50 +1010,52 @@ samples_long <- all_samples %>%
   ) %>%
   left_join(p_tails, by = "parameter") 
 
-nest <- samples_long %>%
-filter(parameter %in% c("beta_lat", "beta_long", "beta_migratory", "beta_nest_cropland", "beta_nest_marsh", "beta_nest_peatland", "beta_nest_swamp"))
-
-early <- samples_long %>%
-  filter(parameter %in% c("beta_age", "beta_arrival_breed"))
-
-ggplot(nest, aes(x = parameter, y = posterior)) +  
-  geom_violin(
-    position = position_dodge(width = 0.7),
-    scale = "width",   # Ensures all violins scale uniformly so they look neat
-    trim = FALSE,      # Prevents cutting off the tails of the distribution
-    linewidth = 0.5,
-    alpha = 0.6
-  ) +
-  theme_minimal() +
-  geom_hline(yintercept = 0)
-  
-
-odba_habitat <- samples_long %>%
-  extract(
-    parameter, 
-    into = c("model", "habitat", "season"), 
-    regex = "^beta_([^_]+)_(.*?)\\[([0-9]+)\\]$") %>%
-  filter(habitat %in% c("cropland", "urban", "marsh", "swamp", "open_water"), 
-         model == "feed") %>%
-  mutate(season = as.factor(season))
-
-odba_weather <- samples_long %>%
-  extract(
-    parameter, 
-    into = c("model", "weather", "season"), 
-    regex = "^beta_([^_]+)_(.*?)\\[([0-9]+)\\]$") %>%
-  filter(weather %in% c("freeze", "precip", "temp"), 
-         model == "ODBA") %>%
-  mutate(season = as.factor(season))
-
-
-ggplot(odba_habitat, aes(x = season, y = posterior, fill = habitat, color = habitat)) +  
-  geom_violin(
-    position = position_dodge(width = 0.7),
-    scale = "width",   # Ensures all violins scale uniformly so they look neat
-    trim = FALSE,      # Prevents cutting off the tails of the distribution
-    linewidth = 0.5,
-    alpha = 0.6
-  ) +
-  theme_minimal() +
-  geom_hline(yintercept = 0)
+write.csv(samples_long, "results/posteriors_fac_26Oct2026_fullrun.csv")
+# 
+# nest <- samples_long %>%
+# filter(parameter %in% c("beta_lat", "beta_long", "beta_migratory", "beta_nest_cropland", "beta_nest_marsh", "beta_nest_peatland", "beta_nest_swamp"))
+# 
+# early <- samples_long %>%
+#   filter(parameter %in% c("beta_age", "beta_arrival_breed"))
+# 
+# ggplot(nest, aes(x = parameter, y = posterior)) +  
+#   geom_violin(
+#     position = position_dodge(width = 0.7),
+#     scale = "width",   # Ensures all violins scale uniformly so they look neat
+#     trim = FALSE,      # Prevents cutting off the tails of the distribution
+#     linewidth = 0.5,
+#     alpha = 0.6
+#   ) +
+#   theme_minimal() +
+#   geom_hline(yintercept = 0)
+#   
+# 
+# odba_habitat <- samples_long %>%
+#   extract(
+#     parameter, 
+#     into = c("model", "habitat", "season"), 
+#     regex = "^beta_([^_]+)_(.*?)\\[([0-9]+)\\]$") %>%
+#   filter(habitat %in% c("cropland", "urban", "marsh", "swamp", "open_water"), 
+#          model == "feed") %>%
+#   mutate(season = as.factor(season))
+# 
+# odba_weather <- samples_long %>%
+#   extract(
+#     parameter, 
+#     into = c("model", "weather", "season"), 
+#     regex = "^beta_([^_]+)_(.*?)\\[([0-9]+)\\]$") %>%
+#   filter(weather %in% c("freeze", "precip", "temp"), 
+#          model == "feed") %>%
+#   mutate(season = as.factor(season))
+# 
+# 
+# ggplot(odba_weather, aes(x = season, y = posterior, fill = weather, color = weather)) +  
+#   geom_violin(
+#     position = position_dodge(width = 0.7),
+#     scale = "width",   # Ensures all violins scale uniformly so they look neat
+#     trim = FALSE,      # Prevents cutting off the tails of the distribution
+#     linewidth = 0.5,
+#     alpha = 0.6
+#   ) +
+#   theme_minimal() +
+#   geom_hline(yintercept = 0)
